@@ -5,7 +5,8 @@ use http::{Request, StatusCode};
 use rustls::{Certificate, PrivateKey};
 use tokio::{fs::File, io::AsyncReadExt};
 use tracing::{error, info, trace_span};
-
+use http::{header, Response};
+use serde_json::{json, to_string, to_vec};
 use h3::{error::ErrorLevel, quic::BidiStream, server::RequestStream};
 use h3_quinn::quinn;
 
@@ -94,48 +95,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+
 async fn handle_request<T>(
-    req: Request<()>,
-    mut stream: RequestStream<T, Bytes>,
-    serve_root: Arc<Option<PathBuf>>,
+    req: http::Request<()>,
+    mut stream: h3::server::RequestStream<T, Bytes>,
+    _serve_root: Arc<Option<PathBuf>>,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
-    T: BidiStream<Bytes>,
+    T: h3::quic::BidiStream<Bytes>,
 {
-    let (status, to_serve) = match serve_root.as_deref() {
-        None => (StatusCode::OK, None),
-        Some(_) if req.uri().path().contains("..") => (StatusCode::NOT_FOUND, None),
-        Some(root) => {
-            let to_serve = root.join(req.uri().path().strip_prefix('/').unwrap_or(""));
-            match File::open(&to_serve).await {
-                Ok(file) => (StatusCode::OK, Some(file)),
-                Err(e) => {
-                    error!("failed to open: \"{}\": {}", to_serve.to_string_lossy(), e);
-                    (StatusCode::NOT_FOUND, None)
-                }
-            }
-        }
-    };
+    // Create a JSON response
+    let json_response = json!({ "message": "Hello world" });
 
-    let resp = http::Response::builder().status(status).body(()).unwrap();
+    // Serialize JSON data
+    let json_bytes = to_vec(&json_response)?;
 
-    match stream.send_response(resp).await {
-        Ok(_) => {
-            info!("successfully respond to connection");
-        }
-        Err(err) => {
-            error!("unable to send response to connection peer: {:?}", err);
-        }
+    // Create an HTTP response with JSON content type
+    let resp = Response::builder()
+        .status(http::StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(())?; // Empty body
+
+    // Send the response headers
+    if let Err(err) = stream.send_response(resp).await {
+        error!("unable to send response headers to connection peer: {:?}", err);
+        return Ok(());
     }
 
-    if let Some(mut file) = to_serve {
-        loop {
-            let mut buf = BytesMut::with_capacity(4096 * 10);
-            if file.read_buf(&mut buf).await? == 0 {
-                break;
-            }
-            stream.send_data(buf.freeze()).await?;
-        }
+    // Send the JSON data
+    if let Err(err) = stream.send_data(Bytes::from(json_bytes)).await {
+        error!("unable to send JSON data to connection peer: {:?}", err);
     }
 
     Ok(stream.finish().await?)
