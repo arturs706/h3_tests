@@ -3,55 +3,12 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use bytes::{Bytes, BytesMut};
 use http::{Request, StatusCode};
 use rustls::{Certificate, PrivateKey};
-use structopt::StructOpt;
 use tokio::{fs::File, io::AsyncReadExt};
 use tracing::{error, info, trace_span};
 
 use h3::{error::ErrorLevel, quic::BidiStream, server::RequestStream};
 use h3_quinn::quinn;
 
-#[derive(StructOpt, Debug)]
-#[structopt(name = "server")]
-struct Opt {
-    #[structopt(
-        name = "dir",
-        short,
-        long,
-        help = "Root directory of the files to serve. \
-                If omitted, server will respond OK."
-    )]
-    pub root: Option<PathBuf>,
-
-    #[structopt(
-        short,
-        long,
-        default_value = "[::1]:4433",
-        help = "What address:port to listen for new connections"
-    )]
-    pub listen: SocketAddr,
-
-    #[structopt(flatten)]
-    pub certs: Certs,
-}
-
-#[derive(StructOpt, Debug)]
-pub struct Certs {
-    #[structopt(
-        long,
-        short,
-        default_value = "server.cert",
-        help = "Certificate for TLS. If present, `--key` is mandatory."
-    )]
-    pub cert: PathBuf,
-
-    #[structopt(
-        long,
-        short,
-        default_value = "server.key",
-        help = "Private key for the certificate."
-    )]
-    pub key: PathBuf,
-}
 
 static ALPN: &[u8] = b"h3";
 
@@ -64,28 +21,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_max_level(tracing::Level::INFO)
         .init();
 
-    // process cli arguments
-
-    let opt = Opt::from_args();
-
-    let root = if let Some(root) = opt.root {
-        if !root.is_dir() {
-            return Err(format!("{}: is not a readable directory", root.display()).into());
-        } else {
-            info!("serving {}", root.display());
-            Arc::new(Some(root))
-        }
-    } else {
-        Arc::new(None)
-    };
-
-    let Certs { cert, key } = opt.certs;
-
-    // create quinn server endpoint and bind UDP socket
-
-    // both cert and key must be DER-encoded
-    let cert = Certificate(std::fs::read(cert)?);
-    let key = PrivateKey(std::fs::read(key)?);
+    let cert = Certificate(std::fs::read(PathBuf::from("certs/server.cert"))?);
+    let key = PrivateKey(std::fs::read(PathBuf::from("certs/server.key"))?);
 
     let mut tls_config = rustls::ServerConfig::builder()
         .with_safe_default_cipher_suites()
@@ -97,19 +34,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tls_config.max_early_data_size = u32::MAX;
     tls_config.alpn_protocols = vec![ALPN.into()];
-
+    let listen: SocketAddr = "[::1]:4433".parse().unwrap();
     let server_config = quinn::ServerConfig::with_crypto(Arc::new(tls_config));
-    let endpoint = quinn::Endpoint::server(server_config, opt.listen)?;
+    let endpoint = quinn::Endpoint::server(server_config, listen)?;
 
-    info!("listening on {}", opt.listen);
+    info!("listening on {}", listen);
 
     // handle incoming connections and requests
 
     while let Some(new_conn) = endpoint.accept().await {
         trace_span!("New connection being attempted");
-
-        let root = root.clone();
-
+        let root: Arc<Option<PathBuf>> = Arc::new(Some(PathBuf::from("static")));
         tokio::spawn(async move {
             match new_conn.await {
                 Ok(conn) => {
@@ -123,16 +58,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         match h3_conn.accept().await {
                             Ok(Some((req, stream))) => {
                                 info!("new request: {:#?}", req);
-
                                 let root = root.clone();
-
                                 tokio::spawn(async {
                                     if let Err(e) = handle_request(req, stream, root).await {
-                                        error!("handling request failed: {}", e);
+                                        error!("failed to handle request: {}", e);
                                     }
                                 });
                             }
-
                             // indicating no more streams to be received
                             Ok(None) => {
                                 break;

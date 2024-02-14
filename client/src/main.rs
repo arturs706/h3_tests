@@ -1,31 +1,11 @@
 use std::{path::PathBuf, sync::Arc};
-
 use futures::future;
-use structopt::StructOpt;
 use tokio::io::AsyncWriteExt;
 use tracing::{error, info};
-
 use h3_quinn::quinn;
 
 static ALPN: &[u8] = b"h3";
 
-#[derive(StructOpt, Debug)]
-#[structopt(name = "server")]
-struct Opt {
-    #[structopt(
-        long,
-        short,
-        default_value = "certs/ca.cert",
-        help = "Certificate of CA who issues the server certificate"
-    )]
-    pub ca: PathBuf,
-
-    #[structopt(name = "keylogfile", long)]
-    pub key_log_file: bool,
-
-    #[structopt()]
-    pub uri: String,
-}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -36,11 +16,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_max_level(tracing::Level::INFO)
         .init();
 
-    let opt = Opt::from_args();
-
-    // DNS lookup
-
-    let uri = opt.uri.parse::<http::Uri>()?;
+    let uri = "https://localhost:4433".parse::<http::Uri>()?;
 
     if uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
         Err("uri scheme must be 'https'")?;
@@ -76,7 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // load certificate of CA who issues the server certificate
     // NOTE that this should be used for dev only
-    if let Err(e) = roots.add(&rustls::Certificate(std::fs::read(opt.ca)?)) {
+    if let Err(e) = roots.add(&rustls::Certificate(std::fs::read(PathBuf::from("certs/ca.cert"))?)) {
         error!("failed to parse trust anchor: {}", e);
     }
 
@@ -89,13 +65,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tls_config.enable_early_data = true;
     tls_config.alpn_protocols = vec![ALPN.into()];
-
-    // optional debugging support
-    if opt.key_log_file {
-        // Write all Keys to a file if SSLKEYLOGFILE is set
-        // WARNING, we enable this for the example, you should think carefully about enabling in your own code
-        tls_config.key_log = Arc::new(rustls::KeyLogFile::new());
-    }
 
     let mut client_endpoint = h3_quinn::quinn::Endpoint::client("[::]:0".parse().unwrap())?;
 
@@ -120,13 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok::<(), Box<dyn std::error::Error>>(())
     };
 
-    // In the following block, we want to take ownership of `send_request`:
-    // the connection will be closed only when all `SendRequest`s instances
-    // are dropped.
-    //
-    //             So we "move" it.
-    //                  vvvv
-    let request = async move {
+      let request = async move {
         info!("sending request ...");
 
         let req = http::Request::builder().uri(uri).body(())?;
@@ -144,9 +107,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         info!("response: {:?} {}", resp.version(), resp.status());
         info!("headers: {:#?}", resp.headers());
-
-        // `recv_data()` must be called after `recv_response()` for
-        // receiving potential response body
         while let Some(mut chunk) = stream.recv_data().await? {
             let mut out = tokio::io::stdout();
             out.write_all_buf(&mut chunk).await?;
