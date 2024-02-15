@@ -1,6 +1,5 @@
 use std::{path::PathBuf, sync::Arc};
 use futures::future;
-use tokio::io::AsyncWriteExt;
 use tracing::{error, info};
 use h3_quinn::quinn;
 use bytes::Buf;
@@ -71,20 +70,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let mut response_body = Vec::new();
 
-
-    let request = async move {
+      let request = async move {
         let req = http::Request::builder().uri(uri).body(())?;
         let mut stream = send_request.send_request(req).await?;
+
         stream.finish().await?;
+
+
         let resp = stream.recv_response().await?;
-        while let Some(chunk) = stream.recv_data().await? {
+
+        while let Some(mut chunk) = stream.recv_data().await? {
             response_body.extend_from_slice(chunk.chunk());
+            print!("{}", std::str::from_utf8(&response_body).unwrap());
         }
 
         Ok::<_, Box<dyn std::error::Error>>(())
     };
-
-    
 
     let (req_res, drive_res) = tokio::join!(request, drive);
     req_res?;

@@ -12,7 +12,7 @@ use h3_quinn::quinn;
 use chrono;
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
-use sqlx::{self, FromRow};
+use sqlx::{self, postgres::PgPoolOptions, FromRow};
 use uuid::Uuid;
 
 static ALPN: &[u8] = b"h3";
@@ -122,10 +122,21 @@ where
     T: h3::quic::BidiStream<Bytes>,
 {
     // Create a JSON response
-    let json_response = json!({ "message": "Hello world" });
+    // let json_response = json!({ "message": "Hello world" });
+    let pool = PgPoolOptions::new()
+    .max_connections(5)
+    .connect("postgresql://arturs706:dICQ89zbAhyGmjZmoZL5fg@hip-gharial-5198.6zw.aws-eu-west-1.cockroachlabs.cloud:26257/staff_users?sslmode=verify-full")
+    .await?;
 
+    let mut rows = sqlx::query_as::<_, StaffUser>("select * from staff_users")
+            .fetch_all(&pool)
+            .await?;
+    let mut result = Vec::new();
+    while let Some(row) = rows.pop() {
+    result.push(row);
+    }
     // Serialize JSON data
-    let json_bytes = to_vec(&json_response)?;
+    let json_bytes = to_vec(&result)?;
 
     // Create an HTTP response with JSON content type
     let resp = Response::builder()
